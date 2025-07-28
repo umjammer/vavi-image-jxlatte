@@ -70,8 +70,8 @@ public class TestCase {
     void test1() throws Exception {
         InputStream input = Files.newInputStream(Path.of(file));
         Path out = Path.of("tmp", "out.png");
-        OutputStream output = Files.newOutputStream(out);
         if (!Files.exists(out.getParent())) Files.createDirectories(out.getParent());
+        OutputStream output = Files.newOutputStream(out);
         JXLDecoder decoder = new JXLDecoder(input);
         JXLImage image = decoder.decode();
 Debug.printf("%d x %d", image.getWidth(), image.getHeight());
