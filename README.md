@@ -1,30 +1,37 @@
-# jxlatte
-Work-in-progress pure java JPEG XL decoder
+[![Release](https://jitpack.io/v/umjammer/vavi-image-jxlatte.svg)](https://jitpack.io/#umjammer/vavi-image-jxlatte)
+[![Java CI](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/maven.yml/badge.svg)](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/maven.yml)
+[![CodeQL](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/codeql-analysis.yml)
+![Java](https://img.shields.io/badge/Java-17-b07219)
 
-## Compiling
-JXLatte is built with the [Meson build system](https://mesonbuild.com/).
+# vavi-image-jxlatte
 
-To build, create a build directory, for example, with `mkdir build && cd build`.
+<img src="https://upload.wikimedia.org/wikipedia/commons/0/06/JPEG_XL_logo.svg" width="120" alt="jpeg-xl logo"/>&nbsp;&nbsp;<sub>© <a href="https://jpeg.org/jpegxl/">JPEG</a></sub>
 
-Then run `meson setup ../` to set up the build directory, and `ninja` to compile JXLatte.
+Pure java JPEG XL Decoder Java ImageIO SPI Plugin powered by [jxlatte](https://github.com/Traneptora/jxlatte)
 
-## Running
-JXLatte can be executed just like any normal jar file:
+## Install
 
-```sh
-java -jar jxlatte.jar samples/art.jxl output.png
-```
+ * [maven](https://jitpack.io/#umjammer/vavi-image-jxlatte)
 
-The JAR can also be used as a library. To use it, add it to your application's classpath.
+## Usage
 
 ```java
-InputStream input = someInputStream;
-OutputStream output = someOutputStream;
-JXLDecoder decoder = new JXLDecoder(input);
-JXLImage image = decoder.decode();
-PNGWriter writer = new PNGWriter(image);
-writer.write(output);
+    BufferedImage image = ImageIO.read(Paths.get("/foo/bar.jxl").toFile());
 ```
+
+## References
+
+ * [original](https://github.com/Traneptora/jxlatte)
+
+## TODO
+
+ * something wrong
+   * blendmodes_5.jxl
+   * wb-rainbow.jxl 
+
+---
+
+[Original](https://github.com/Traneptora/jxlatte)
 
 ## Features
 

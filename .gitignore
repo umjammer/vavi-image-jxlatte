@@ -11,3 +11,5 @@ output.png
 # test files
 /*.png
 /*.jxl
+local.properties
+tmp/
