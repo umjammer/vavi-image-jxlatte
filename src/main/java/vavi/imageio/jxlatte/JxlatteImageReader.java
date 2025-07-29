@@ -16,7 +16,6 @@ import java.lang.System.Logger.Level;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.zip.Deflater;
 import javax.imageio.IIOException;
 import javax.imageio.ImageReadParam;
 import javax.imageio.ImageReader;
@@ -89,6 +88,7 @@ long t = System.currentTimeMillis();
         InputStream stream = new WrappedImageInputStream((ImageInputStream) input);
 
         try {
+            // TODO bec JXLDecoder doesn't work WrappedImageInputStream directly
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             byte[] b = new byte[8192];
             while (true) {
@@ -165,20 +165,25 @@ logger.log(Level.DEBUG, "time: " + (System.currentTimeMillis() - t));
         }
 
         //
-logger.log(Level.DEBUG, "%d x %d, %s, %d".formatted(width, height, image.isAlphaPremultiplied(), colorChannels));
+logger.log(Level.TRACE, "%d x %d, alpha: %s, bl: %d, ch: %d, ai: %d, apm: %s, bd: %d, max: %d".formatted(width, height, image.hasAlpha(), buffer.length, colorChannels, alphaIndex, image.isAlphaPremultiplied(), bitDepth, maxValue));
         BufferedImage bufferedImage;
-        if (image.isAlphaPremultiplied())
-            bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-        else
+        if (image.hasAlpha()) {
+            if (image.isAlphaPremultiplied())
+                bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB_PRE);
+            else
+                bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        } else
             bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        int shift = bitDepth == 16 ? 8 : 0;
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++) {
-                int[] p = new int[colorChannels];
+                int[] p = new int[buffer.length];
                 for (int c = 0; c < colorChannels; c++)
-                    p[c + (image.isAlphaPremultiplied() ? 1 : 0)] = buffer[c].getIntBuffer()[y][x];
-                if (image.isAlphaPremultiplied()) {
-                    p[0] = buffer[alphaIndex].getIntBuffer()[y][x];
+                    p[c + (image.hasAlpha() ? 1 : 0)] = buffer[c + (image.hasAlpha() ? 1 : 0)].getIntBuffer()[y][x] >>> shift;
+                if (image.hasAlpha()) {
+                    p[0] = buffer[alphaIndex].getIntBuffer()[y][x] >>> shift;
                 }
+                // about pixel int array index "https://chatgpt.com/c/68888a3b-c690-8005-8040-dbd7e6d15345"
                 bufferedImage.getRaster().setPixel(x, y, p);
             }
         return bufferedImage;
