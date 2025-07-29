@@ -25,13 +25,13 @@ Pure java JPEG XL Decoder Java ImageIO SPI Plugin powered by [jxlatte](https://g
 
 ## TODO
 
- * something wrong
-   * blendmodes_5.jxl
-   * wb-rainbow.jxl 
+ * ~~something wrong~~ -> alpha detection, index and bitDepth
+   * ~~blendmodes_5.jxl~~
+   * ~~wb-rainbow.jxl~~ 
 
 ---
 
-[Original](https://github.com/Traneptora/jxlatte)
+# [Original](https://github.com/Traneptora/jxlatte)
 
 ## Features
 
