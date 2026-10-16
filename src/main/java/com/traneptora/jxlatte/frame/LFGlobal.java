@@ -5,7 +5,6 @@ import java.io.IOException;
 import com.traneptora.jxlatte.color.ColorFlags;
 import com.traneptora.jxlatte.entropy.EntropyStream;
 import com.traneptora.jxlatte.frame.features.Patch;
-import com.traneptora.jxlatte.frame.features.noise.NoiseParameters;
 import com.traneptora.jxlatte.frame.features.spline.SplinesBundle;
 import com.traneptora.jxlatte.frame.modular.MATree;
 import com.traneptora.jxlatte.frame.modular.ModularStream;
@@ -13,12 +12,13 @@ import com.traneptora.jxlatte.frame.vardct.HFBlockContext;
 import com.traneptora.jxlatte.frame.vardct.LFChannelCorrelation;
 import com.traneptora.jxlatte.io.Bitreader;
 import com.traneptora.jxlatte.io.InvalidBitstreamException;
+import com.traneptora.jxlatte.io.Loggers;
 
 public class LFGlobal {
     public final Frame frame;
     public final Patch[] patches;
     public final SplinesBundle splines;
-    public final NoiseParameters noiseParameters;
+    public final float[] noiseParameters;
     public final float[] lfDequant = new float[]{1f / 4096f, 1f / 512f, 1f / 256f};
     public final int globalScale;
     public final int quantLF;
@@ -29,6 +29,7 @@ public class LFGlobal {
 
     public LFGlobal(Bitreader reader, Frame parent) throws IOException {
         this.frame = parent;
+        Loggers loggers = frame.getLoggers();
         int extra = frame.globalMetadata.getExtraChannelCount();
         FrameHeader header = frame.getFrameHeader();
         if ((header.flags & FrameFlags.PATCHES) != 0) {
@@ -36,7 +37,7 @@ public class LFGlobal {
             int numPatches = stream.readSymbol(reader, 0);
             patches = new Patch[numPatches];
             for (int i = 0; i < numPatches; i++) {
-                patches[i] = new Patch(stream, reader, extra, parent.globalMetadata.getNumAlphaChannels());
+                patches[i] = Patch.readPatch(stream, reader, extra, parent.globalMetadata.getNumAlphaChannels());
             }
             if (!stream.validateFinalState())
                 throw new InvalidBitstreamException("Illegal ANS final state");
@@ -53,7 +54,9 @@ public class LFGlobal {
         if ((header.flags & FrameFlags.NOISE) != 0) {
             if (frame.globalMetadata.getColorChannelCount() < 3)
                 throw new InvalidBitstreamException("Cannot do noise in grayscale");
-            noiseParameters = new NoiseParameters(reader);
+            noiseParameters = new float[8];
+            for (int i = 0; i < noiseParameters.length; i++)
+                noiseParameters[i] = reader.readBits(10) / 1024.0f;
         } else {
             noiseParameters = null;
         }
@@ -67,8 +70,8 @@ public class LFGlobal {
             quantLF = reader.readU32(16, 0, 1, 5, 1, 8, 1, 16);
             for (int i = 0; i < 3; i++)
                 scaledDequant[i] =  (1 << 16) * lfDequant[i] / (globalScale * quantLF);
-            hfBlockCtx = new HFBlockContext(reader, parent.getLoggers());
-            lfChanCorr = new LFChannelCorrelation(reader);
+            hfBlockCtx = new HFBlockContext(reader, loggers);
+            lfChanCorr = LFChannelCorrelation.read(reader);
         } else {
             globalScale = 0;
             quantLF = 0;
@@ -77,9 +80,15 @@ public class LFGlobal {
             lfChanCorr = new LFChannelCorrelation();
         }
 
+        loggers.log(Loggers.LOG_TRACE, "globalScale: %d", globalScale);
+        loggers.log(Loggers.LOG_TRACE, "quantLF: %d", quantLF);
+        loggers.log(Loggers.LOG_TRACE, "lfChannelCorrelation: %s", lfChanCorr);
+        loggers.log(Loggers.LOG_TRACE, "scaledDequant: %s", scaledDequant);
+
         boolean hasGlobalTree = reader.readBool();
-        MATree globalTree = hasGlobalTree ? new MATree(parent.getLoggers(), reader) : null;
+        MATree globalTree = hasGlobalTree ? MATree.readTree(parent.getLoggers(), reader) : null;
         frame.setGlobalTree(globalTree);
+        loggers.log(Loggers.LOG_TRACE, "global tree: %s", globalTree);
         int subModularChannelCount = extra;
         int ecStart = 0;
         if (header.encoding == FrameFlags.MODULAR) {

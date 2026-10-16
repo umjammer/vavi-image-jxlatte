@@ -19,6 +19,20 @@ public class Point {
         this(p.y, p.x);
     }
 
+    public Point abs() {
+        return new Point(Math.abs(y), Math.abs(x));
+    }
+
+    /**
+     * Gives the closest point to this one within the bounds of the rectangle
+     */
+    public Point withinBounds(Rectangle bounds) {
+        Point corner = bounds.computeLowerCorner();
+        int y = MathHelper.clamp(this.y, bounds.origin.y, corner.y);
+        int x = MathHelper.clamp(this.x, bounds.origin.x, corner.x);
+        return new Point(y, x);
+    }
+
     @Override
     public int hashCode() {
         return Objects.hash(y, x);
