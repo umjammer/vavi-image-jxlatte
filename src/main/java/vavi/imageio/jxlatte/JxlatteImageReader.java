@@ -142,7 +142,7 @@ logger.log(Level.DEBUG, "time: " + (System.currentTimeMillis() - t));
         }
         if (coerce) {
             for (int c = 0; c < buffer.length; c++) {
-                buffer[c].castToFloatIfInt(~(~0 << image.getTaggedBitDepth(c)));
+                buffer[c].castToFloat(image.getTaggedBitDepth(c));
             }
         }
         if (image.isAlphaPremultiplied()) {
@@ -160,7 +160,7 @@ logger.log(Level.DEBUG, "time: " + (System.currentTimeMillis() - t));
             if (buffer[c].isInt() && image.getTaggedBitDepth(c) == bitDepth) {
                 buffer[c].clamp(maxValue);
             } else {
-                buffer[c].castToIntIfFloat(maxValue);
+                buffer[c].castToIntWithMax(maxValue);
             }
         }
 
