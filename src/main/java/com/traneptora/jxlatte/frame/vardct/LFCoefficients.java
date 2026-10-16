@@ -6,11 +6,11 @@ import java.util.Arrays;
 import com.traneptora.jxlatte.frame.Frame;
 import com.traneptora.jxlatte.frame.FrameFlags;
 import com.traneptora.jxlatte.frame.FrameHeader;
-import com.traneptora.jxlatte.frame.group.LFGroup;
 import com.traneptora.jxlatte.frame.modular.ModularChannel;
 import com.traneptora.jxlatte.frame.modular.ModularStream;
 import com.traneptora.jxlatte.io.Bitreader;
 import com.traneptora.jxlatte.io.InvalidBitstreamException;
+import com.traneptora.jxlatte.util.Dimension;
 import com.traneptora.jxlatte.util.ImageBuffer;
 import com.traneptora.jxlatte.util.Point;
 
@@ -19,35 +19,32 @@ public class LFCoefficients {
     public final int[][] lfIndex;
     public final Frame frame;
 
-    public LFCoefficients(Bitreader reader, LFGroup parent, Frame frame, ImageBuffer[] lfBuffer) throws IOException {
+    public LFCoefficients(Bitreader reader, int parentID, Dimension parentSize, Frame frame, ImageBuffer[] lfBuffer) throws IOException {
         this.frame = frame;
-        this.lfIndex = new int[parent.size.height][parent.size.width];
+        this.lfIndex = new int[parentSize.height][parentSize.width];
         FrameHeader header = frame.getFrameHeader();
         boolean adaptiveSmoothing = (header.flags &
             (FrameFlags.SKIP_ADAPTIVE_LF_SMOOTHING | FrameFlags.USE_LF_FRAME)) == 0;
         ModularChannel[] info = new ModularChannel[3];
         float[][][] dequantLFCoeff = new float[3][][];
-        boolean subsampled = header.jpegUpsamplingY[0] != 0 || header.jpegUpsamplingY[1] != 0
-            || header.jpegUpsamplingY[2] != 0 || header.jpegUpsamplingX[0] != 0
-            || header.jpegUpsamplingX[1] != 0 || header.jpegUpsamplingX[2] != 0;
-        if (adaptiveSmoothing && subsampled)
+        if (adaptiveSmoothing && header.isSubsampled)
             throw new InvalidBitstreamException("Adaptive Smoothing is incompatible with subsampling");
 
         for (int i = 0; i < 3; i++) {
-            int sizeY = parent.size.height >> header.jpegUpsamplingY[i];
-            int sizeX = parent.size.width >> header.jpegUpsamplingX[i];
+            int sizeY = parentSize.height >> header.jpegUpsamplingY[i];
+            int sizeX = parentSize.width >> header.jpegUpsamplingX[i];
             info[Frame.cMap[i]] = new ModularChannel(sizeY, sizeX, header.jpegUpsamplingY[i],
                 header.jpegUpsamplingX[i]);
             dequantLFCoeff[i] = new float[sizeY][sizeX];
         }
 
         if ((header.flags & FrameFlags.USE_LF_FRAME) != 0) {
-            Point pos = frame.getLFGroupLocation(parent.lfGroupID);
+            Point pos = frame.getLFGroupLocation(parentID);
             int pY = pos.y << 8;
             int pX = pos.x << 8;
             this.dequantLFCoeff = dequantLFCoeff;
             for (int c = 0; c < 3; c++) {
-                lfBuffer[c].castToFloatIfInt(~(~0 << frame.globalMetadata.getBitDepthHeader().bitsPerSample));
+                lfBuffer[c].castToFloat(frame.globalMetadata.getBitDepthHeader().bitsPerSample);
                 float[][] b = lfBuffer[c].getFloatBuffer();
                 for (int y = 0; y < dequantLFCoeff[c].length; y++) {
                     System.arraycopy(b[pY + y], pX, dequantLFCoeff[c][y], 0, dequantLFCoeff[c][y].length);
@@ -57,7 +54,7 @@ public class LFCoefficients {
         }
 
         int extraPrecision = reader.readBits(2);
-        ModularStream lfQuantStream = new ModularStream(reader, frame, 1 + parent.lfGroupID, info);
+        ModularStream lfQuantStream = new ModularStream(reader, frame, 1 + parentID, info);
         lfQuantStream.decodeChannels(reader);
         int[][][] lfQuant = lfQuantStream.getDecodedBuffer();
         lfQuantStream = null;
@@ -75,7 +72,7 @@ public class LFCoefficients {
         }
 
         // chroma from luma
-        if (!subsampled) {
+        if (!header.isSubsampled) {
             final LFChannelCorrelation lfc = frame.getLFGlobal().lfChanCorr;
             // SPEC: -128, not -127
             final float kX = lfc.baseCorrelationX + (lfc.xFactorLF - 128f) / (float)lfc.colorFactor;
@@ -99,25 +96,25 @@ public class LFCoefficients {
         else
             this.dequantLFCoeff = dequantLFCoeff;
 
-        populateLFIndex(parent, lfQuant);
+        populateLFIndex(parentSize, lfQuant);
     }
 
-    private void populateLFIndex(LFGroup parent, int[][][] lfQuant) {
+    private void populateLFIndex(Dimension parentSize, int[][][] lfQuant) {
         HFBlockContext hfctx = frame.getLFGlobal().hfBlockCtx;
-        for (int y = 0; y < parent.size.height; y++) {
-            for (int x = 0; x < parent.size.width; x++)
+        for (int y = 0; y < parentSize.height; y++) {
+            for (int x = 0; x < parentSize.width; x++)
                 lfIndex[y][x] = getLFIndex(lfQuant, hfctx, y, x);
         }
     }
 
-    private float[][][] adaptiveSmooth(final float[][][] coeff, final float[] scaledDequant) {
+    private static float[][][] adaptiveSmooth(final float[][][] coeff, final float[] scaledDequant) {
         final float[][][] weighted = new float[3][][];
         final float[][] gap = new float[coeff[0].length][];
         final float[][][] dequantLFCoeff = new float[3][][];
         for (int i = 0; i < 3; i++) {
             final float[][] co = coeff[i];
             weighted[i] = new float[co.length][];
-            final float sd = scaledDequant[i];
+            final float sd = 1.0f / scaledDequant[i];
             for (int y = 1; y < co.length - 1; y++) {
                 final float[] coy = co[y];
                 final float[] coym = co[y - 1];
@@ -171,7 +168,7 @@ public class LFCoefficients {
                         dqy[x] = coy[x];
                         continue;
                     }
-                    dqy[x] = (coy[x] - wiy[x]) * gy[x] + wiy[x];
+                    dqy[x] = (wiy[x] - coy[x]) * gy[x] + coy[x];
                 }
             }
         }

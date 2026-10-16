@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Stream;
 
 import com.traneptora.jxlatte.io.InvalidBitstreamException;
 import com.traneptora.jxlatte.io.Loggers;
@@ -39,6 +40,7 @@ public class JXLatte {
         boolean hdr = options.hdr == JXLOptions.HDR_AUTO ? image.isHDR() : options.hdr == JXLOptions.HDR_ON;
         int bitDepth = hdr ? 16 : options.outputDepth;
         PNGWriter writer = new PNGWriter(image, bitDepth, options.outputCompression, hdr, options.peakDetect);
+        writer.setWriteSrgbIcc(options.forceSrgbIcc);
         writeImage(writer::write, outputFilename);
     }
 
@@ -73,6 +75,8 @@ public class JXLatte {
             "        (BT.2020 Primaries, D65 White Point, PQ Transfer)",
             "    --png-peak-detect",
             "        Run peak detection when writing SDR PNGs",
+            "    --png-force-srgb-icc",
+            "        Force writing an ICC profile to the output PNG even when writing sRGB",
             "",
             "    --draw-varblocks",
             "        Show varblocks for VarDCT images",
@@ -97,6 +101,10 @@ public class JXLatte {
             System.exit(1);
             return false;
         }
+    }
+
+    private static boolean arrayContains(String value, String... arr) {
+        return Stream.<String>of(arr).anyMatch(value::equals);
     }
 
     private static boolean parseOption(JXLOptions options, String arg, boolean foundMM) {
@@ -138,12 +146,15 @@ public class JXLatte {
             case "debug":
                 options.debug = parseFlag(key, value, valueL);
                 return true;
+            case "png-force-srgb-icc":
+                options.forceSrgbIcc = parseFlag(key, value, valueL);
+                return true;
             case "png-hdr":
-                if (Arrays.asList("", "auto").contains(valueL)) {
+                if (arrayContains(valueL, "", "auto")) {
                     options.hdr = JXLOptions.HDR_AUTO;
-                } else if (Arrays.asList("yes", "true", "hdr").contains(valueL)) {
+                } else if (arrayContains(valueL, "yes", "true", "hdr")) {
                     options.hdr = JXLOptions.HDR_ON;
-                } else if (Arrays.asList("no", "false", "sdr").contains(valueL)) {
+                } else if (arrayContains(valueL, "no", "false", "sdr")) {
                     options.hdr = JXLOptions.HDR_OFF;
                 } else {
                     System.err.format("jxlatte: Unknown --png-hdr flag: %s%n", value);
@@ -175,11 +186,11 @@ public class JXLatte {
                 }
                 return true;
             case "png-peak-detect":
-                if (Arrays.asList("", "auto").contains(valueL)) {
+                if (arrayContains(valueL, "", "auto")) {
                     options.peakDetect = JXLOptions.PEAK_DETECT_AUTO;
-                } else if (Arrays.asList("yes", "true").contains(valueL)) {
+                } else if (arrayContains(valueL, "yes", "true")) {
                     options.peakDetect = JXLOptions.PEAK_DETECT_ON;
-                } else if (Arrays.asList("no", "false").contains(valueL)) {
+                } else if (arrayContains(valueL, "no", "false")) {
                     options.peakDetect = JXLOptions.PEAK_DETECT_OFF;
                 } else {
                     System.err.format("jxlatte: Unknown --png-peak-detect flag: %s%n", value);
@@ -187,11 +198,11 @@ public class JXLatte {
                 }
                 return true;
             case "info":
-                if (Arrays.asList("", "info", "yes", "true").contains(valueL)) {
+                if (arrayContains(valueL, "", "info", "yes", "true")) {
                     options.verbosity = Loggers.LOG_INFO;
-                } else if (Arrays.asList("no", "false").contains(valueL)) {
+                } else if (arrayContains(valueL, "no", "false")) {
                     options.verbosity = Loggers.LOG_BASE;
-                } else if (Arrays.asList("v", "verbose").contains(valueL)) {
+                } else if (arrayContains(valueL, "v", "verbose")) {
                     options.verbosity = Loggers.LOG_VERBOSE;
                 } else if (valueL.equals("trace")) {
                     options.verbosity = Loggers.LOG_TRACE;
@@ -200,10 +211,11 @@ public class JXLatte {
                     System.exit(1);
                 }
                 return true;
+            case "v":
             case "verbose":
-                if (Arrays.asList("", "yes", "true", "v", "verbose").contains(valueL)) {
+                if (arrayContains(valueL, "", "yes", "true", "v", "verbose")) {
                     options.verbosity = Loggers.LOG_VERBOSE;
-                } else if (Arrays.asList("no", "false").contains(valueL)) {
+                } else if (arrayContains(valueL, "no", "false")) {
                     options.verbosity = Loggers.LOG_BASE;
                 } else {
                     System.err.format("jxlatte: Unknown --verbose flag: %s%n", value);

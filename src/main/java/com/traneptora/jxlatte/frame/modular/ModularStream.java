@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -14,7 +15,7 @@ import com.traneptora.jxlatte.io.InvalidBitstreamException;
 import com.traneptora.jxlatte.io.Loggers;
 import com.traneptora.jxlatte.util.Dimension;
 
-public class ModularStream {
+public class ModularStream implements Iterable<ModularChannel> {
 
     private static final int[][] kDeltaPalette = {
         {0, 0, 0}, {4, 4, 4}, {11, 0, 0}, {0, 0, -13}, {0, -12, 0}, {-10, -10, -10},
@@ -46,6 +47,7 @@ public class ModularStream {
     private Frame frame;
     private EntropyStream stream = null;
     private boolean transformed = false;
+    private Loggers loggers;
 
     private List<ModularChannel> channels = new ArrayList<>();
 
@@ -64,6 +66,7 @@ public class ModularStream {
     private ModularStream(Bitreader reader, Frame frame, int streamIndex,
             int channelCount, int ecStart, ModularChannel[] channelArray) throws IOException {
         this.frame = frame;
+        loggers = frame.getLoggers();
         this.streamIndex = streamIndex;
         if (channelCount == 0) {
             tree = null;
@@ -89,8 +92,7 @@ public class ModularStream {
             channels.addAll(Arrays.asList(channelArray));
         }
 
-        frame.getLoggers().log(Loggers.LOG_TRACE, "Transforms: %s", (Object)transforms);
-
+        loggers.log(Loggers.LOG_TRACE, "Transforms: %s", (Object)transforms);
         for (int i = 0; i < nbTransforms; i++) {
             if (transforms[i].tr == TransformInfo.PALETTE) {
                 if (transforms[i].beginC < nbMetaChannels)
@@ -151,13 +153,13 @@ public class ModularStream {
                             int w = chan.size.width;
                             chan.size.width = (w + 1) / 2;
                             chan.hshift++;
-                            residu = new ModularChannel(chan);
+                            residu = ModularChannel.copyOf(chan);
                             residu.size.width = w / 2;
                         } else {
                             int h = chan.size.height;
                             chan.size.height = (h + 1) / 2;
                             chan.vshift++;
-                            residu = new ModularChannel(chan);
+                            residu = ModularChannel.copyOf(chan);
                             residu.size.height = h / 2;
                         }
                         channels.add(r, residu);
@@ -171,13 +173,15 @@ public class ModularStream {
             }
         }
         if (!useGlobalTree) {
-            tree = new MATree(frame.getLoggers(), reader);
+            tree = MATree.readTree(loggers, reader);
+            loggers.log(Loggers.LOG_TRACE, "tree: %s", tree);
         } else {
             tree = frame.getGlobalTree();
         }
         stream = new EntropyStream(tree.getStream());
 
         distMultiplier = channels.stream().mapToInt(c -> c.size.width).reduce(0, Math::max);
+        loggers.log(Loggers.LOG_TRACE, "channels: %s", channels);
     }
 
     public void decodeChannels(Bitreader reader) throws IOException {
@@ -186,11 +190,17 @@ public class ModularStream {
 
     public void decodeChannels(Bitreader reader, boolean partial) throws IOException {
         int groupDim = frame.getFrameHeader().groupDim;
+        int channelIndex = 0;
         for (int i = 0; i < channels.size(); i++) {
             ModularChannel channel = getChannel(i);
             if (partial && i >= nbMetaChannels && (channel.size.height > groupDim || channel.size.width > groupDim))
                 break;
-            channel.decode(reader, stream, wpParams, tree, this, i, streamIndex, distMultiplier);
+            if (channel.size.width == 0 || channel.size.height == 0) {
+                channel.allocate();
+            } else {
+                channel.decode(reader, stream, wpParams, tree, this, channelIndex, streamIndex, distMultiplier, loggers);
+                channelIndex++;
+            }
         }
         if (stream != null && !stream.validateFinalState())
             throw new InvalidBitstreamException("Illegal final modular state");
@@ -204,6 +214,11 @@ public class ModularStream {
 
     public ModularChannel getChannel(int index) {
         return channels.get(index);
+    }
+
+    @Override
+    public Iterator<ModularChannel> iterator() {
+        return channels.iterator();
     }
 
     public void applyTransforms() throws InvalidBitstreamException {
@@ -317,7 +332,7 @@ public class ModularStream {
                 ModularChannel firstChannel = getChannel(first);
                 ModularChannel c0 = getChannel(0);
                 for (int j = first + 1; j <= last; j++) {
-                    channels.add(j, new ModularChannel(firstChannel));
+                    channels.add(j, ModularChannel.copyOf(firstChannel));
                 }
                 for (int c = 0; c < transforms[i].numC; c++) {
                     ModularChannel chan = getChannel(first + c);

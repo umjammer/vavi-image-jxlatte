@@ -5,7 +5,7 @@
 
 # vavi-image-jxlatte
 
-<img src="https://upload.wikimedia.org/wikipedia/commons/0/06/JPEG_XL_logo.svg" width="120" alt="jpeg-xl logo"/>&nbsp;&nbsp;<sub>© <a href="https://jpeg.org/jpegxl/">JPEG</a></sub>
+<img src="src/test/resources/duke_jpegxl.png" width="160" alt="jpeg-xl logo"/>
 
 Pure java JPEG XL Decoder Java ImageIO SPI Plugin powered by [jxlatte](https://github.com/Traneptora/jxlatte)
 
@@ -27,7 +27,8 @@ Pure java JPEG XL Decoder Java ImageIO SPI Plugin powered by [jxlatte](https://g
 
  * ~~something wrong~~ -> alpha detection, index and bitDepth
    * ~~blendmodes_5.jxl~~
-   * ~~wb-rainbow.jxl~~ 
+   * ~~wb-rainbow.jxl~~
+ * https://github.com/Traneptora/jxlatte/pull/28 is done then remove the code and let it as a dependency 
 
 ---
 
@@ -56,3 +57,7 @@ Features not yet supported at this time:
 - Progressive Decoding
 - Region-of-interest Decoding
 - Animation
+
+---
+
+<sub>image designed by @umjammer, drawn by nano banana</sub>

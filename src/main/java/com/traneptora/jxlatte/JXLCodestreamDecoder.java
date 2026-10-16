@@ -6,7 +6,9 @@ import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
 
+import com.traneptora.jxlatte.bundle.BitDepthHeader;
 import com.traneptora.jxlatte.bundle.BlendingInfo;
+import com.traneptora.jxlatte.bundle.ExtraChannelInfo;
 import com.traneptora.jxlatte.bundle.ExtraChannelType;
 import com.traneptora.jxlatte.bundle.ImageHeader;
 import com.traneptora.jxlatte.color.ColorEncodingBundle;
@@ -23,22 +25,26 @@ import com.traneptora.jxlatte.io.Loggers;
 import com.traneptora.jxlatte.io.PushbackInputStream;
 import com.traneptora.jxlatte.util.Dimension;
 import com.traneptora.jxlatte.util.ImageBuffer;
+import com.traneptora.jxlatte.util.MathHelper;
 import com.traneptora.jxlatte.util.Point;
+import com.traneptora.jxlatte.util.Rectangle;
 
 public class JXLCodestreamDecoder {
 
-    private static void copyToCanvas(ImageBuffer canvas, Point start, Point off,
+    private static void copyToCanvas(ImageBuffer canvas, Point patchStart, Point frameOffset,
             Dimension size, ImageBuffer frameBuffer) {
-        Object[] canvasB = canvas.isInt() ? canvas.getIntBuffer() : canvas.getFloatBuffer();
-        Object[] frameB = frameBuffer.isInt() ? frameBuffer.getIntBuffer() : frameBuffer.getFloatBuffer();
-        for (int y = 0; y < size.height; y++) {
-            System.arraycopy(frameB[y + off.y], off.x, canvasB[y + start.y], start.x, size.width);
-        }
+        Object[] canvasB = canvas.getBackingBuffer();
+        Object[] frameB = frameBuffer.getBackingBuffer();
+        for (int y = 0; y < size.height; y++)
+            System.arraycopy(frameB[y + frameOffset.y], frameOffset.x,
+                canvasB[y + patchStart.y], patchStart.x, size.width);
     }
 
     private static float[][] transposeBufferFloat(float[][] src, int orientation) {
         int srcHeight = src.length;
-        int srcWidth = src[0].length;
+        int srcWidth = srcHeight == 0 ? 0 : src[0].length;
+        if (srcHeight == 0 || srcWidth == 0)
+            return src;
         int srcH1 = srcHeight - 1;
         int srcW1 = srcWidth - 1;
         float[][] dest = orientation > 4 ? new float[srcWidth][srcHeight]
@@ -107,7 +113,9 @@ public class JXLCodestreamDecoder {
 
     private static int[][] transposeBufferInt(int[][] src, int orientation) {
         int srcHeight = src.length;
-        int srcWidth = src[0].length;
+        int srcWidth = srcHeight == 0 ? 0 : src[0].length;
+        if (srcHeight == 0 || srcWidth == 0)
+            return src;
         int srcH1 = srcHeight - 1;
         int srcW1 = srcWidth - 1;
         int[][] dest = orientation > 4 ? new int[srcWidth][srcHeight]
@@ -207,7 +215,6 @@ public class JXLCodestreamDecoder {
         int colorChannels = imageHeader.getColorChannelCount();
         int extraChannels = imageHeader.getExtraChannelCount();
         Patch[] patches = frame.getLFGlobal().patches;
-        boolean hasAlpha = imageHeader.hasAlpha();
         for (int i = 0; i < patches.length; i++) {
             Patch patch = patches[i];
             if (patch.ref > 3)
@@ -233,237 +240,14 @@ public class JXLCodestreamDecoder {
                     BlendingInfo info = patch.blendingInfos[j][c];
                     if (info.mode == 0)
                         continue;
-                    boolean premult = imageHeader.hasAlpha() &&
-                        imageHeader.getExtraChannelInfo(info.alphaChannel).alphaAssociated;
-                    boolean isAlpha = c > 0 && imageHeader.getExtraChannelInfo(c - 1).type == ExtraChannelType.ALPHA;
                     if (info.mode > 3 && header.upsampling > 1 && c > 0 &&
                             header.ecUpsampling[c - 1] << imageHeader.getExtraChannelInfo(c - 1).dimShift
                             != header.upsampling) {
                         throw new InvalidBitstreamException("Alpha channel upsampling mismatch during patches");
                     }
-                    boolean toFloat = true;
-                    switch (info.mode) {
-                        case 1:
-                            if (refBuffer[d].isInt() && frameBuffer[d].isInt()) {
-                                int[][] refBufferI = refBuffer[d].getIntBuffer();
-                                int[][] frameBufferI = frameBuffer[d].getIntBuffer();
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    System.arraycopy(refBufferI[y0 + y], x0, frameBufferI[y + patch.bounds.origin.y],
-                                        patch.bounds.origin.x, patch.bounds.size.width);
-                                }
-                                toFloat = false;
-                            }
-                            break;
-                        case 2:
-                            if (refBuffer[d].isInt() && frameBuffer[d].isInt()) {
-                                int[][] refBufferI, frameBufferI;
-                                refBufferI = refBuffer[d].getIntBuffer();
-                                frameBufferI = frameBuffer[d].getIntBuffer();
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    for (int x = 0; x <  patch.bounds.size.width; x++) {
-                                        frameBufferI[y0 + y][x0 + x] += refBufferI[patch.bounds.origin.y + y][patch.bounds.origin.x + x];
-                                    }
-                                }
-                                toFloat = false;
-                            }
-                            break;
-                    }
-                    if (toFloat) {
-                        int depth = c == 0 ? imageHeader.getBitDepthHeader().bitsPerSample :
-                            imageHeader.getExtraChannelInfo(c - 1).bitDepth.bitsPerSample;
-                        int max = ~(~0 << depth);
-                        refBuffer[d].castToFloatIfInt(max);
-                        frameBuffer[d].castToFloatIfInt(max);
-                    }
-                    float[][] refBufferF, frameBufferF;
-                    if (toFloat) {
-                        refBufferF = refBuffer[d].getFloatBuffer();
-                        frameBufferF = frameBuffer[d].getFloatBuffer();
-                    } else {
-                        refBufferF = null;
-                        frameBufferF = null;
-                    }
-                    float[][] alphaBufferOld, alphaBufferNew;
-                    if (info.mode > 3 && hasAlpha) {
-                        int depth = imageHeader.getExtraChannelInfo(info.alphaChannel).bitDepth.bitsPerSample;
-                        frameBuffer[colorChannels + info.alphaChannel].castToFloatIfInt(~(~0 << depth));
-                        refBuffer[colorChannels + info.alphaChannel].castToFloatIfInt(~(~0 << depth));
-                        alphaBufferOld = frameBuffer[colorChannels + info.alphaChannel].getFloatBuffer();
-                        alphaBufferNew = refBuffer[colorChannels + info.alphaChannel].getFloatBuffer();
-                    } else {
-                        alphaBufferOld = null;
-                        alphaBufferNew = null;
-                    }
-                    switch (info.mode) {
-                        case 1:
-                            if (!toFloat)
-                                break;
-                            for (int y = 0; y < patch.bounds.size.height; y++) {
-                                System.arraycopy(refBufferF[y0 + y], x0, frameBufferF[y + patch.bounds.origin.y],
-                                    patch.bounds.origin.x, patch.bounds.size.width);
-                            }
-                            break;
-                        case 2:
-                            if (!toFloat)
-                                break;
-                            for (int y = 0; y < patch.bounds.size.height; y++) {
-                                for (int x = 0; x < patch.bounds.size.width; x++) {
-                                    frameBufferF[y0 + y][x0 + x] += refBufferF[patch.bounds.origin.y + y][patch.bounds.origin.x + x];
-                                }
-                            }
-                            break;
-                        case 3:
-                            for (int y = 0; y < patch.bounds.size.height; y++) {
-                                for (int x = 0; x < patch.bounds.size.width; x++) {
-                                    frameBufferF[y0 + y][x0 + x] *= refBufferF[patch.bounds.origin.y + y][patch.bounds.origin.x + x];
-                                }
-                            }
-                            break;
-                        case 4:
-                            if (isAlpha) {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float newAlpha = alphaBufferNew[newY][newX];
-                                        if (info.clamp)
-                                            newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                                        frameBufferF[oldY][oldX] = alphaBufferOld[oldY][oldX] + newAlpha * (1 - alphaBufferOld[oldY][oldX]);
-                                    }
-                                }
-                            } else if (premult) {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float newAlpha = alphaBufferNew[newY][newX];
-                                        if (info.clamp)
-                                            newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                                        frameBufferF[oldY][oldX] = refBufferF[newY][newX] + frameBufferF[oldY][oldX] * (1 - newAlpha);
-                                    }
-                                }
-                            } else {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float oldAlpha = hasAlpha ? alphaBufferOld[oldY][oldX] : 1.0f;
-                                        float newAlpha = hasAlpha ? alphaBufferNew[newY][newX] : 1.0f;
-                                        if (info.clamp)
-                                            newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                                        float alpha = oldAlpha + newAlpha * (1.0f - oldAlpha);
-                                        frameBufferF[oldY][oldX] = (refBufferF[newY][newX] * newAlpha +
-                                            frameBufferF[oldY][oldX] * oldAlpha * (1.0f - newAlpha)) / alpha;
-                                    }
-                                }
-                            }
-                            break;
-                        case 5:
-                            if (isAlpha) {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        frameBufferF[oldY][oldX] = alphaBufferOld[oldY][oldX] + alphaBufferNew[newY][newX] * (1 - alphaBufferOld[oldY][oldX]);
-                                    }
-                                }
-                            } else if (premult) {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float newAlpha = alphaBufferNew[newY][newX];
-                                        if (info.clamp)
-                                            newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                                        frameBufferF[oldY][oldX] = frameBufferF[oldY][oldX] + refBufferF[newY][newX] * (1 - newAlpha);
-                                    }
-                                }
-                            } else {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float oldAlpha = hasAlpha ? alphaBufferOld[oldY][oldX] : 1.0f;
-                                        float newAlpha = hasAlpha ? alphaBufferNew[newY][newX] : 1.0f;
-                                        float alpha = oldAlpha + newAlpha * (1.0f - oldAlpha);
-                                        frameBufferF[oldY][oldX] = (frameBufferF[oldY][oldX] * newAlpha +
-                                            refBufferF[newY][newX] * oldAlpha * (1.0f - newAlpha)) / alpha;
-                                    }
-                                }
-                            }
-                            break;
-                        case 6:
-                            if (isAlpha) {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float newAlpha = alphaBufferNew[newY][newX];
-                                        if (info.clamp)
-                                            newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                                        frameBufferF[oldY][oldX] = hasAlpha ? newAlpha : 1.0f;
-                                    }
-                                }
-                            } else {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float oldAlpha = hasAlpha ? alphaBufferOld[oldY][oldX] : 1.0f;
-                                        float newAlpha = hasAlpha ? alphaBufferNew[newY][newX] : 1.0f;
-                                        if (info.clamp)
-                                            newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                                        float alpha = oldAlpha + newAlpha * (1.0f - oldAlpha);
-                                        frameBufferF[oldY][oldX] += alpha * refBufferF[newY][newX];
-                                    }
-                                }
-                            }
-                            break;
-                        case 7:
-                            if (isAlpha) {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        frameBufferF[oldY][oldX] = hasAlpha ? alphaBufferOld[oldY][oldX] : 1.0f;
-                                    }
-                                }
-                            } else {
-                                for (int y = 0; y < patch.bounds.size.height; y++) {
-                                    int newY = y + patch.bounds.origin.y;
-                                    int oldY = y + y0;
-                                    for (int x = 0; x < patch.bounds.size.width; x++) {
-                                        int oldX = x + x0;
-                                        int newX = x + patch.bounds.origin.x;
-                                        float oldAlpha = hasAlpha ? alphaBufferOld[oldY][oldX] : 1.0f;
-                                        float newAlpha = hasAlpha ? alphaBufferNew[newY][newX] : 1.0f;
-                                        if (info.clamp)
-                                            newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                                        float alpha = oldAlpha + newAlpha * (1.0f - oldAlpha);
-                                        frameBufferF[oldY][oldX] = refBufferF[newY][newX] + alpha * frameBufferF[oldY][oldX];
-                                    }
-                                }
-                            }
-                            break;
-                        default:
-                            throw new IllegalStateException("Challenge complete, how did we get here");
-                    }
+                    blendBuffers(frameBuffer[d], frameBuffer, refBuffer, patch.positions[j],
+                        patch.positions[j], patch.bounds.origin, patch.bounds.size, d,
+                        frame, info, true);
                 }
             }
         }
@@ -476,7 +260,7 @@ public class JXLCodestreamDecoder {
         float[][][] buffers = new float[3][][];
         int depth = imageHeader.getBitDepthHeader().bitsPerSample;
         for (int c = 0; c < 3; c++) {
-            buffer[c].castToFloatIfInt(~(~0 << depth));
+            buffer[c].castToFloat(depth);
             buffers[c] = buffer[c].getFloatBuffer();
         }
 
@@ -498,168 +282,257 @@ public class JXLCodestreamDecoder {
         }
     }
 
+    private static void blendAdd(ImageBuffer canvas, ImageBuffer frame, ImageBuffer ref,
+            Point patchStart, Point frameOffset, Point refOffset, Dimension size) {
+        if (frame.isInt()) {
+            int[][] cb = canvas.getIntBuffer();
+            int[][] rb = ref.getIntBuffer();
+            int[][] fb = frame.getIntBuffer();
+            for (int y = 0; y < size.height; y++) {
+                int cy = y + patchStart.y;
+                int fy = y + frameOffset.y;
+                int ry = y + refOffset.y;
+                for (int x = 0; x < size.width; x++) {
+                    int cx = x + patchStart.x;
+                    int fx = x + frameOffset.x;
+                    int rx = x + refOffset.x;
+                    cb[cy][cx] = rb[ry][rx] + fb[fy][fx];
+                }
+            }
+        } else {
+            float[][] cb = canvas.getFloatBuffer();
+            float[][] rb = ref.getFloatBuffer();
+            float[][] fb = frame.getFloatBuffer();
+            for (int y = 0; y < size.height; y++) {
+                int cy = y + patchStart.y;
+                int fy = y + frameOffset.y;
+                int ry = y + refOffset.y;
+                for (int x = 0; x < size.width; x++) {
+                    int cx = x + patchStart.x;
+                    int fx = x + frameOffset.x;
+                    int rx = x + refOffset.x;
+                    cb[cy][cx] = rb[ry][rx] + fb[fy][fx];
+                }
+            }
+        }
+    }
+
+    private static void blendMult(ImageBuffer canvas, ImageBuffer frame, ImageBuffer ref,
+             Point patchStart, Point frameOffset, Point refOffset, Dimension size, boolean clamp) {
+        float[][] cf = canvas.getFloatBuffer();
+        float[][] rf = ref.getFloatBuffer();
+        float[][] ff = frame.getFloatBuffer();
+        for (int y = 0; y < size.height; y++) {
+            int cy = y + patchStart.y;
+            int fy = y + frameOffset.y;
+            int ry = y + refOffset.y;
+            for (int x = 0; x < size.width; x++) {
+                int cx = x + patchStart.x;
+                int fx = x + frameOffset.x;
+                int rx = x + refOffset.x;
+                float newSample = ff[fy][fx];
+                if (clamp)
+                    newSample = MathHelper.clampAsc(newSample, 0.0f, 1.0f);
+                cf[cy][cx] = newSample * rf[ry][rx];
+            }
+        }
+    }
+
+    private static void blendBlend(ImageBuffer canvas, ImageBuffer frame, ImageBuffer ref,
+            ImageBuffer frameAlpha, ImageBuffer refAlpha,
+            Point patchStart, Point frameOffset, Point refOffset, Dimension size,
+            boolean isAlpha, boolean hasExtra, boolean clamp, boolean premult) {
+        /* if there's no extra channels, then alpha = 1.0 resolves this into blendAdd */
+        if (!hasExtra) {
+            blendAdd(canvas, frame, ref, patchStart, frameOffset, refOffset, size);
+            return;
+        }
+        float[][] oaf = isAlpha ? null : refAlpha.getFloatBuffer();
+        float[][] naf = isAlpha ? null : frameAlpha.getFloatBuffer();
+        float[][] rf = ref.getFloatBuffer();
+        float[][] ff = frame.getFloatBuffer();
+        float[][] cf = canvas.getFloatBuffer();
+        for (int y = 0; y < size.height; y++) {
+            int cy = y + patchStart.y;
+            int fy = y + frameOffset.y;
+            int ry = y + refOffset.y;
+            for (int x = 0; x < size.width; x++) {
+                int cx = x + patchStart.x;
+                int fx = x + frameOffset.x;
+                int rx = x + refOffset.x;
+                float oldSample = rf[ry][rx];
+                float newSample = ff[fy][fx];
+                float oldAlpha = isAlpha ? oldSample : oaf[ry][rx];
+                float newAlpha = isAlpha ? newSample : naf[fy][fx];
+                if (clamp)
+                    newAlpha = MathHelper.clampAsc(newAlpha, 0.0f, 1.0f);
+                if (isAlpha) {
+                    cf[cy][cx] = oldAlpha + newAlpha * (1.0f - oldAlpha);
+                } else if (premult) {
+                    cf[cy][cx] = newSample + oldSample * (1.0f - newAlpha);
+                } else {
+                    cf[cy][cx] = (newSample * newAlpha + oldSample * oldAlpha * (1.0f - newAlpha))
+                        / (oldAlpha + newAlpha * (1.0f - oldAlpha));
+                }
+            }
+        }
+    }
+
+    private static void blendMulAdd(ImageBuffer canvas, ImageBuffer frame, ImageBuffer ref,
+            ImageBuffer frameAlpha, Point patchStart, Point frameOffset, Point refOffset, Dimension size,
+            boolean isAlpha, boolean hasExtra, boolean clamp) {
+        if (!hasExtra) {
+            blendAdd(canvas, frame, ref, patchStart, frameOffset, refOffset, size);
+            return;
+        }
+        if (isAlpha) {
+            /* For the alpha channel itself, the values of the source frame are preserved: alpha = old_alpha. */
+            copyToCanvas(canvas, patchStart, frameOffset, size, ref);
+            return;
+        }
+        float[][] naf = frameAlpha.getFloatBuffer();
+        float[][] rf = ref.getFloatBuffer();
+        float[][] ff = frame.getFloatBuffer();
+        float[][] cf = canvas.getFloatBuffer();
+        for (int y = 0; y < size.height; y++) {
+            int cy = y + patchStart.y;
+            int fy = y + frameOffset.y;
+            int ry = y + refOffset.y;
+            for (int x = 0; x < size.width; x++) {
+                int cx = x + patchStart.x;
+                int fx = x + frameOffset.x;
+                int rx = x + refOffset.x;
+                float oldSample = rf[ry][rx];
+                float newSample = ff[fy][fx];
+                float newAlpha = naf[fy][fx];
+                if (clamp)
+                    newAlpha = MathHelper.clampAsc(newAlpha, 0.0f, 1.0f);
+                cf[cy][cx] = oldSample + newAlpha * newSample;
+            }
+        }
+    }
+
+    private void blendBuffers(ImageBuffer canvas, ImageBuffer[] frameBuffers, ImageBuffer[] refBuffers,
+            Point patchStart, Point frameOffset, Point refOffset, Dimension blendSize, int idx,
+            Frame src, BlendingInfo info, boolean patch) throws InvalidBitstreamException {
+        int colors = imageHeader.getColorChannelCount();
+        int frameColors = src.getColorChannelCount();
+        ImageBuffer frameBuffer = frameBuffers[colors != frameColors ? (idx == 0 ? 1 : idx + 2) : idx];
+        int exIdx = idx - colors;
+        boolean isExtra = exIdx >= 0;
+        boolean hasExtra = imageHeader.getExtraChannelCount() > 0;
+        ExtraChannelInfo extraInfo = isExtra ? imageHeader.getExtraChannelInfo(exIdx) : null;
+        /* is this channel an alpha channel */
+        boolean isAlpha = isExtra && extraInfo.type == ExtraChannelType.ALPHA;
+        /* the alpha channel associated with this channel */
+        ExtraChannelInfo alphaInfo = hasExtra ? imageHeader.getExtraChannelInfo(info.alphaChannel) : null;
+        /* the BitDepthHeader for this channel */
+        BitDepthHeader bitDepth = isExtra ? extraInfo.bitDepth : imageHeader.getBitDepthHeader();
+        boolean premult = hasExtra && alphaInfo.alphaAssociated;
+        /* If one of these is already float cast the other one to float too */
+        if (canvas.getType() != frameBuffer.getType()) {
+            frameBuffer.castToFloat(bitDepth.bitsPerSample);
+            canvas.castToFloat(bitDepth.bitsPerSample);
+        }
+        if (info.mode == FrameFlags.BLEND_REPLACE || refBuffers == null && info.mode == FrameFlags.BLEND_ADD) {
+            copyToCanvas(canvas, patchStart, frameOffset, blendSize, frameBuffer);
+            return;
+        }
+        if (refBuffers[idx] == null)
+            refBuffers[idx] = new ImageBuffer(canvas.getType(), canvas.height, canvas.width);
+        ImageBuffer refBuffer = refBuffers[idx];
+        ImageBuffer refAlpha = hasExtra ? refBuffers[colors + info.alphaChannel] : null;
+        ImageBuffer frameAlpha = hasExtra ? frameBuffers[frameColors + info.alphaChannel] : null;
+        if (hasExtra && (info.mode == FrameFlags.BLEND_BLEND || info.mode == FrameFlags.BLEND_MULADD)) {
+            int alphaDepth = alphaInfo.bitDepth.bitsPerSample;
+            if (info.mode == FrameFlags.BLEND_BLEND) {
+                if (refAlpha == null) {
+                    refAlpha = new ImageBuffer(ImageBuffer.TYPE_FLOAT, canvas.height, canvas.width);
+                    refBuffers[colors + info.alphaChannel] = refAlpha;
+                }
+                refBuffers[colors + info.alphaChannel].castToFloat(alphaDepth);
+            }
+            frameBuffers[frameColors + info.alphaChannel].castToFloat(alphaDepth);
+        }
+        boolean shouldCast = info.mode == FrameFlags.BLEND_MULT
+            || info.mode == FrameFlags.BLEND_BLEND && hasExtra
+            || info.mode == FrameFlags.BLEND_MULADD && hasExtra && !isAlpha;
+        /* if one of these is already float then cast the others too */
+        if (shouldCast || refBuffer.getType() != frameBuffer.getType()) {
+            frameBuffer.castToFloat(bitDepth.bitsPerSample);
+            canvas.castToFloat(bitDepth.bitsPerSample);
+            refBuffer.castToFloat(bitDepth.bitsPerSample);
+        }
+        int mode = info.mode;
+        boolean below = false;
+        if (patch) {
+            if (info.mode == 0)
+                return;
+            switch (info.mode) {
+                case 5:
+                    mode = FrameFlags.BLEND_BLEND;
+                    below = true;
+                    break;
+                case 6:
+                    mode = FrameFlags.BLEND_MULADD;
+                    break;
+                case 7:
+                    mode = FrameFlags.BLEND_MULADD;
+                    below = true;
+                    break;
+                default:
+                    mode = info.mode - 1;
+            }
+        }
+        ImageBuffer oldBuffer = frameBuffer;
+        ImageBuffer newBuffer = refBuffer;
+        if (below) {
+            newBuffer = frameBuffer;
+            oldBuffer = refBuffer;
+        }
+        switch (mode) {
+            case FrameFlags.BLEND_ADD:
+                blendAdd(canvas, oldBuffer, newBuffer,
+                    patchStart, frameOffset, refOffset, blendSize);
+                break;
+            case FrameFlags.BLEND_MULT:
+                blendMult(canvas, oldBuffer, newBuffer,
+                    patchStart, frameOffset, refOffset, blendSize, info.clamp);
+                break;
+            case FrameFlags.BLEND_BLEND:
+                blendBlend(canvas, oldBuffer, newBuffer, frameAlpha, refAlpha,
+                    patchStart, frameOffset, refOffset, blendSize, isAlpha, hasExtra, info.clamp, premult);
+                break;
+            case FrameFlags.BLEND_MULADD:
+                blendMulAdd(canvas, oldBuffer, newBuffer, frameAlpha,
+                    patchStart, frameOffset, refOffset, blendSize, isAlpha, hasExtra, info.clamp);
+                break;
+            default:
+                throw new InvalidBitstreamException("Illegal blend mode");
+        }
+    }
+
     public void blendFrame(ImageBuffer[] canvas, Frame frame)
             throws InvalidBitstreamException {
         Dimension imageSize = imageHeader.getSize();
+        Rectangle canvasBounds = new Rectangle(imageSize);
         FrameHeader header = frame.getFrameHeader();
-        int frameStartY = header.bounds.origin.y < 0 ? 0 : header.bounds.origin.y;
-        int frameStartX = header.bounds.origin.x < 0 ? 0 : header.bounds.origin.x;
-        int frameOffsetY = frameStartY - header.bounds.origin.y;
-        int frameOffsetX = frameStartX - header.bounds.origin.x;
+        /* patchStart is where to lay onto the canvas */
+        Point patchStart = header.bounds.origin.withinBounds(canvasBounds);
+        /* frameOffset is offset in-frame to start blending from */
+        Point frameOffset = new Point(patchStart.y - header.bounds.origin.y, patchStart.x - header.bounds.origin.x);
         Point lowerCorner = header.bounds.computeLowerCorner();
-        int frameHeight = Math.min(lowerCorner.y, imageSize.height) - frameStartY;
-        int frameWidth = Math.min(lowerCorner.x, imageSize.width) - frameStartX;
-        int frameColors = frame.getColorChannelCount();
-        int imageColors = imageHeader.getColorChannelCount();
-        boolean hasAlpha = imageHeader.hasAlpha();
+        int blendHeight = Math.min(lowerCorner.y, imageSize.height) - patchStart.y;
+        int blendWidth = Math.min(lowerCorner.x, imageSize.width) - patchStart.x;
+        Dimension blendSize = new Dimension(blendHeight, blendWidth);
         ImageBuffer[] frameBuffers = frame.getBuffer();
+        int colors = imageHeader.getColorChannelCount();
         for (int c = 0; c < canvas.length; c++) {
-            int frameC = frameColors != imageColors ? (c == 0 ? 1 : c + 2) : c;
-            ImageBuffer frameBuffer = frameBuffers[frameC];
-            BlendingInfo info;
-            if (frameC < frameColors)
-                info = header.blendingInfo;
-            else
-                info = header.ecBlendingInfo[frameC - frameColors];
-            boolean isAlpha = c >= imageColors &&
-                imageHeader.getExtraChannelInfo(c - imageColors).type == ExtraChannelType.ALPHA;
-            boolean premult = hasAlpha && imageHeader.getExtraChannelInfo(info.alphaChannel).alphaAssociated;
-            ImageBuffer[] refBuffer = reference[info.source];
-            if (canvas[c].getType() != frameBuffer.getType()) {
-                int depthCanvas = (c >= imageColors ? imageHeader.getExtraChannelInfo(c - imageColors)
-                    .bitDepth : imageHeader.getBitDepthHeader()).bitsPerSample;
-                int depthFrame = (frameC >= frameColors ? imageHeader.getExtraChannelInfo(frameC - frameColors)
-                    .bitDepth : imageHeader.getBitDepthHeader()).bitsPerSample;
-                frameBuffer.castToFloatIfInt(~(~0 << depthFrame));
-                canvas[c].castToFloatIfInt(~(~0 << depthCanvas));
-            }
-            if (info.mode == FrameFlags.BLEND_REPLACE || refBuffer == null && info.mode == FrameFlags.BLEND_ADD) {
-                int offY = frameStartY - header.bounds.origin.y;
-                int offX = frameStartX - header.bounds.origin.x;
-                copyToCanvas(canvas[c], new Point(frameStartY, frameStartX), new Point(offY, offX),
-                    new Dimension(frameHeight, frameWidth), frameBuffer);
-                continue;
-            }
-            if (refBuffer[c] == null)
-                refBuffer[c] = new ImageBuffer(frameBuffer.getType(), canvas[c].height, canvas[c].width);
-            ImageBuffer ref = refBuffer[c];
-            if (hasAlpha && (info.mode == FrameFlags.BLEND_BLEND || info.mode == FrameFlags.BLEND_MULADD)) {
-                int depth = imageHeader.getExtraChannelInfo(info.alphaChannel).bitDepth.bitsPerSample;
-                if (refBuffer[imageColors + info.alphaChannel] == null) {
-                    refBuffer[imageColors + info.alphaChannel] = new ImageBuffer(ImageBuffer.TYPE_FLOAT,
-                        canvas[c].height, canvas[c].width);
-                }
-                if (!refBuffer[imageColors + info.alphaChannel].isFloat())
-                    refBuffer[imageColors + info.alphaChannel].castToFloatIfInt(~(~0 << depth));
-                if (!frameBuffers[frameColors + info.alphaChannel].isFloat())
-                    frameBuffers[frameColors + info.alphaChannel].castToFloatIfInt(~(~0 << depth));
-            }
-            if (ref.getType() != frameBuffer.getType() || info.mode != FrameFlags.BLEND_ADD) {
-                int depthCanvas = (c >= imageColors ? imageHeader.getExtraChannelInfo(c - imageColors)
-                    .bitDepth : imageHeader.getBitDepthHeader()).bitsPerSample;
-                int depthFrame = (frameC >= imageColors ? imageHeader.getExtraChannelInfo(frameC - imageColors)
-                    .bitDepth : imageHeader.getBitDepthHeader()).bitsPerSample;
-                frameBuffer.castToFloatIfInt(~(~0 << depthFrame));
-                canvas[c].castToFloatIfInt(~(~0 << depthCanvas));
-                ref.castToFloatIfInt(~(~0 << depthCanvas));
-            }
-            float[][] cf, rf, ff, oaf, naf;
-            if (info.mode != FrameFlags.BLEND_ADD || frameBuffer.isFloat()) {
-                cf = canvas[c].getFloatBuffer();
-                rf = ref.getFloatBuffer();
-                ff = frameBuffer.getFloatBuffer();
-            } else {
-                cf = null;
-                rf = null;
-                ff = null;
-            }
-            switch (info.mode) {
-                case FrameFlags.BLEND_ADD:
-                    if (frameBuffer.isInt()) {
-                        int[][] ci = canvas[c].getIntBuffer();
-                        int[][] ri = ref.getIntBuffer();
-                        int[][] fi = frameBuffer.getIntBuffer();
-                        for (int y = 0; y < frameHeight; y++) {
-                            int cy = y + frameStartY;
-                            int fy = y + frameOffsetY;
-                            for (int x = 0; x < frameWidth; x++) {
-                                int cx = x + frameStartX;
-                                int fx = x + frameOffsetX;
-                                ci[cy][cx] = ri[cy][cx] + fi[fy][fx];
-                            }
-                        }
-                    } else {
-                        for (int y = 0; y < frameHeight; y++) {
-                            int cy = y + frameStartY;
-                            int fy = y + frameOffsetY;
-                            for (int x = 0; x < frameWidth; x++) {
-                                int cx = x + frameStartX;
-                                int fx = x + frameOffsetX;
-                                cf[cy][cx] = rf[cy][cx] + ff[fy][fx];
-                            }
-                        }
-                    }
-                    break;
-                case FrameFlags.BLEND_MULT:
-                    for (int y = 0; y < frameHeight; y++) {
-                        int cy = y + frameStartY;
-                        int fy = y + frameOffsetY;
-                        for (int x = 0; x < frameWidth; x++) {
-                            int cx = x + frameStartX;
-                            int fx = x + frameOffsetX;
-                            float newSample = ff[fy][fx];
-                            if (info.clamp)
-                                newSample = newSample < 0.0f ? 0.0f : newSample > 1.0f ? 1.0f : newSample;
-                            cf[cy][cx] = newSample * rf[cy][cx];
-                        }
-                    }
-                    break;
-                case FrameFlags.BLEND_BLEND:
-                    oaf = hasAlpha ? refBuffer[imageColors + info.alphaChannel].getFloatBuffer() : null;
-                    naf = hasAlpha ? frameBuffers[frameColors + info.alphaChannel].getFloatBuffer() : null;
-                    for (int y = 0; y < frameHeight; y++) {
-                        int cy = y + frameStartY;
-                        int fy = y + frameOffsetY;
-                        for (int x = 0; x < frameWidth; x++) {
-                            int cx = x + frameStartX;
-                            int fx = x + frameOffsetX;
-                            float oldAlpha = hasAlpha ? oaf[cy][cx] : 1.0f;
-                            float newAlpha = hasAlpha ? naf[fy][fx] : 1.0f;
-                            if (info.clamp)
-                                newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                            float alpha = 1.0f;
-                            float oldSample = rf[cy][cx];
-                            float newSample = ff[fy][fx];
-                            if (isAlpha || hasAlpha && !premult)
-                                alpha = oldAlpha + newAlpha * (1 - oldAlpha);
-                            cf[cy][cx] = isAlpha ? alpha : (!hasAlpha || premult) ?
-                                newSample + oldSample * (1.0f - newAlpha) :
-                                (newSample * newAlpha + oldSample * oldAlpha * (1.0f - newAlpha)) / alpha;
-                        }
-                    }
-                    break;
-                case FrameFlags.BLEND_MULADD:
-                    oaf = hasAlpha ? refBuffer[imageColors + info.alphaChannel].getFloatBuffer() : null;
-                    naf = hasAlpha ? frameBuffers[frameColors + info.alphaChannel].getFloatBuffer() : null;
-                    for (int y = 0; y < frameHeight; y++) {
-                        int cy = y + frameStartY;
-                        int fy = y + frameOffsetY;
-                        for (int x = 0; x < frameWidth; x++) {
-                            int cx = x + frameStartX;
-                            int fx = x + frameOffsetX;
-                            float oldAlpha = hasAlpha ? oaf[cy][cx] : 1.0f;
-                            float newAlpha = hasAlpha ? naf[fy][fx] : 1.0f;
-                            if (info.clamp)
-                                newAlpha = newAlpha < 0.0f ? 0.0f : newAlpha > 1.0f ? 1.0f : newAlpha;
-                            float oldSample = rf[cy][cx];
-                            float newSample = ff[fy][fx];
-                            cf[cy][cx] = isAlpha ? oldAlpha : oldSample + newAlpha * newSample;
-                        }
-                    }
-                    break;
-                default:
-                    throw new InvalidBitstreamException("Illegal blend mode");
-            }
+            ImageBuffer canvasBuffer = canvas[c];
+            BlendingInfo info = c >= colors ? header.ecBlendingInfo[c - colors] : header.blendingInfo;
+            ImageBuffer[] refBuffers = reference[info.source];
+            blendBuffers(canvasBuffer, frameBuffers, refBuffers, patchStart, frameOffset, patchStart, blendSize,
+                c, frame, info, false);
         }
     }
 
@@ -733,12 +606,12 @@ public class JXLCodestreamDecoder {
             frame.printDebugInfo();
             loggers.log(Loggers.LOG_TRACE, "%s", header);
             frame.readTOC();
-            if (lfBuffer[header.lfLevel] == null && (header.flags & FrameFlags.USE_LF_FRAME) != 0)
-                throw new InvalidBitstreamException("LF Level too large");
             if (options.parseOnly) {
                 frame.skipFrameData();
                 continue;
             }
+            if (lfBuffer[header.lfLevel] == null && (header.flags & FrameFlags.USE_LF_FRAME) != 0)
+                throw new InvalidBitstreamException("LF Level too large");
             frame.decodeFrame(lfBuffer[header.lfLevel]);
             if (header.lfLevel > 0)
                 lfBuffer[header.lfLevel - 1] = frame.getBuffer();

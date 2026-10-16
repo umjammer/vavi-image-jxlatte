@@ -6,7 +6,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
@@ -21,6 +21,34 @@ import com.traneptora.jxlatte.color.ColorManagement;
 import com.traneptora.jxlatte.util.ImageBuffer;
 
 public class PNGWriter {
+
+    public static final int makeLeTag(int a, int b, int c, int d) {
+        return (a & 0xff) | ((b & 0xff) << 8) | ((c & 0xff) << 16) | ((d & 0xff) << 24);
+    }
+
+    public static final int makeBeTag(int a, int b, int c, int d) {
+        return makeLeTag(d, c, b, a);
+    }
+
+    public static final void writeBeTag(int tag, OutputStream out) throws IOException {
+        if (out instanceof DataOutput) {
+            DataOutput dout = (DataOutput)out;
+            dout.writeInt(tag);
+        } else {
+            out.write(tag >>> 24);
+            out.write((tag >>> 16) & 0xff);
+            out.write((tag >>> 8) & 0xff);
+            out.write(tag & 0xff);
+        }
+    }
+
+    private static final int TAG_IHDR = makeBeTag('I','H','D','R');
+    private static final int TAG_IEND = makeBeTag('I','E','N','D');
+    private static final int TAG_IDAT = makeBeTag('I','D','A','T');
+    private static final int TAG_SRGB = makeBeTag('s','R','G','B');
+    private static final int TAG_ICCP = makeBeTag('i','C','C','P');
+    private static final byte[] jxlatteBytes = new byte[]{'j','x','l','a','t','t','e','\0'};
+
     private int bitDepth;
     private ImageBuffer[] buffer;
     private DataOutputStream out;
@@ -28,6 +56,7 @@ public class PNGWriter {
     private int width;
     private int colorMode;
     private int colorChannels;
+    private int totalChannels;
     private int alphaIndex;
     private int deflateLevel;
     private CIEPrimaries primaries;
@@ -37,6 +66,7 @@ public class PNGWriter {
     private boolean hdr;
     private int tf;
     private int maxValue;
+    private boolean writeSrgbIcc = false;
 
     public PNGWriter(JXLImage image) {
         this(image, -1, false, JXLOptions.PEAK_DETECT_AUTO);
@@ -75,23 +105,28 @@ public class PNGWriter {
             this.colorMode = alphaIndex >= 0 ? 6 : 2;
             this.colorChannels = 3;
         }
+        this.totalChannels = colorChannels + (alphaIndex >= 0 ? 1 : 0);
         boolean coerce = image.isAlphaPremultiplied();
-        this.buffer = image.getBuffer(true);
+        ImageBuffer[] bufferPre = image.getBuffer(false);
+        buffer = new ImageBuffer[totalChannels];
+        for (int c = 0; c < colorChannels; c++)
+            buffer[c] = new ImageBuffer(bufferPre[c]);
+        if (alphaIndex >= 0)
+            buffer[colorChannels] = new ImageBuffer(bufferPre[colorChannels + alphaIndex]);
         if (!coerce) {
             for (int c = 0; c < buffer.length; c++) {
-                if (buffer[c].isInt() && image.getTaggedBitDepth(c) != bitDepth) {
+                if (buffer[c].isInt() && image.getTaggedBitDepth(c < colorChannels ? c : c + alphaIndex) != bitDepth) {
                     coerce = true;
                     break;
                 }
             }
         }
         if (coerce) {
-            for (int c = 0; c < buffer.length; c++) {
-                buffer[c].castToFloatIfInt(~(~0 << image.getTaggedBitDepth(c)));
-            }
+            for (int c = 0; c < buffer.length; c++)
+                buffer[c].castToFloat(image.getTaggedBitDepth(c < colorChannels ? c : c + alphaIndex));
         }
         if (image.isAlphaPremultiplied()) {
-            float[][] a = buffer[alphaIndex].getFloatBuffer();
+            float[][] a = buffer[colorChannels].getFloatBuffer();
             for (int c = 0; c < colorChannels; c++) {
                 float[][] buff = buffer[c].getFloatBuffer();
                 for (int y = 0; y < buffer[c].height; y++) {
@@ -102,18 +137,20 @@ public class PNGWriter {
             }
         }
         for (int c = 0; c < buffer.length; c++) {
-            if (buffer[c].isInt() && image.getTaggedBitDepth(c) == bitDepth) {
-                buffer[c].clamp(maxValue);
-            } else {
-                buffer[c].castToIntIfFloat(maxValue);
-            }            
+            if (!buffer[c].isInt())
+                buffer[c].castToIntWithMax(maxValue);
+            buffer[c].clamp(maxValue);
         }
+    }
+
+    public void setWriteSrgbIcc(boolean force) {
+        this.writeSrgbIcc = force;
     }
 
     private void writeIHDR() throws IOException {
         ByteArrayOutputStream bout = new ByteArrayOutputStream();
         DataOutputStream dout = new DataOutputStream(bout);
-        dout.writeInt(0x49_48_44_52); // IHDR
+        dout.writeInt(TAG_IHDR);
         dout.writeInt(width);
         dout.writeInt(height);
         dout.writeByte(bitDepth);
@@ -135,7 +172,7 @@ public class PNGWriter {
             return;
         DataOutputStream dout = new DataOutputStream(out);
         dout.writeInt(0x00_00_00_01);
-        dout.writeInt(0x73_52_47_42); // sRGB
+        dout.writeInt(TAG_SRGB); // sRGB
         dout.write(1); // relative colorimetric
         dout.writeInt(0xD9_C9_2C_7F); // crc
         dout.flush();
@@ -143,33 +180,37 @@ public class PNGWriter {
 
     private void writeICCP() throws IOException {
         boolean compressedICC = false;
+        int iccLen;
         if (iccProfile == null) {
-            if (hdr) {
-                this.iccProfile = new byte[4866];
-                try (InputStream in = JXLatte.class.getResourceAsStream("/bt2020-d65-pq.icc.zz")) {
-                    IOHelper.readFully(in, this.iccProfile);
-                }
-                compressedICC = true;
-            } else {
-                return;
+            this.iccProfile = new byte[8192];
+            String streamName = hdr ? "/bt2020-d65-pq.icc.zz" : "/bt709-d65-srgb.icc.zz";
+            try (InputStream in = JXLatte.class.getResourceAsStream(streamName)) {
+                int remaining = IOHelper.readFully(in, this.iccProfile);
+                iccLen = iccProfile.length - remaining;
             }
+            compressedICC = true;
+        } else {
+            iccLen = iccProfile.length;
         }
         ByteArrayOutputStream bout = new ByteArrayOutputStream();
         DataOutputStream dout = new DataOutputStream(bout);
-        dout.writeInt(0x69_43_43_50); // iCCP
-        byte[] s = "jxlatte".getBytes(StandardCharsets.UTF_8);
-        dout.write(s);
-        dout.write(0); // null terminator
+        dout.writeInt(TAG_ICCP); // iCCP
+        dout.write(jxlatteBytes); // includes NUL terminator
         dout.write(0); // compression method 0
         if (compressedICC) {
-            dout.write(iccProfile);
+            dout.write(iccProfile, 0, iccLen);
             dout.flush();
             dout.close();
         } else {
-            DeflaterOutputStream defout = new DeflaterOutputStream(dout, new Deflater(deflateLevel));
-            defout.write(iccProfile);
-            defout.flush();
-            defout.close();
+            Deflater deflater = new Deflater(deflateLevel);
+            DeflaterOutputStream defout = new DeflaterOutputStream(dout, deflater);
+            try {
+                defout.write(iccProfile, 0, iccLen);
+                defout.flush();
+            } finally {
+                defout.close();
+                deflater.end();
+            }
         }
         byte[] buf = bout.toByteArray();
         out.writeInt(buf.length - 4);
@@ -179,25 +220,26 @@ public class PNGWriter {
         out.writeInt((int)crc32.getValue());
     }
 
-    private void writeSample(DataOutput dout, int sample) throws IOException {
-        if (bitDepth == 8)
-            dout.writeByte(sample);
-        else
-            dout.writeShort(sample);
-    }
-
-    private void writeIDAT() throws IOException {
+    private void writeIDAT(Deflater deflater) throws IOException {
         ByteArrayOutputStream bout = new ByteArrayOutputStream();
-        bout.write(new byte[]{'I', 'D', 'A', 'T'});
-        DataOutputStream dout = new DataOutputStream(new DeflaterOutputStream(bout, new Deflater(deflateLevel)));
-        for (int y = 0; y < height; y++) {
-            dout.writeByte(0); // filter 0
-            for (int x = 0; x < width; x++) {
-                for (int c = 0; c < colorChannels; c++) {
-                    writeSample(dout, buffer[c].getIntBuffer()[y][x]);
+        writeBeTag(TAG_IDAT, bout);
+        DataOutputStream dout = new DataOutputStream(new DeflaterOutputStream(bout, deflater));
+        int[][][] buffers = Stream.of(buffer).map(ImageBuffer::getIntBuffer).toArray(int[][][]::new);
+        if (bitDepth == 8) {
+            for (int y = 0; y < height; y++) {
+                dout.writeByte(0); // filter 0
+                for (int x = 0; x < width; x++) {
+                    for (int c = 0; c < buffers.length; c++)
+                        dout.writeByte(buffers[c][y][x]);
                 }
-                if (alphaIndex >= 0)
-                    writeSample(dout, buffer[colorChannels + alphaIndex].getIntBuffer()[y][x]);
+            }
+        } else {
+            for (int y = 0; y < height; y++) {
+                dout.writeByte(0); // filter 0
+                for (int x = 0; x < width; x++) {
+                    for (int c = 0; c < buffers.length; c++)
+                        dout.writeShort(buffers[c][y][x]);
+                }
             }
         }
         dout.close();
@@ -213,13 +255,18 @@ public class PNGWriter {
         this.out = new DataOutputStream(outputStream);
         out.writeLong(0x8950_4E47_0D0A_1A0AL); // png signature
         writeIHDR();
-        if (hdr || this.iccProfile != null)
+        if (hdr || this.iccProfile != null || writeSrgbIcc)
             writeICCP();
         else
             writeSRGB();
-        writeIDAT();
+        Deflater deflater = new Deflater(deflateLevel);
+        try {
+            writeIDAT(deflater);
+        } finally {
+            deflater.end();
+        }
         out.writeInt(0);
-        out.writeInt(0x49_45_4E_44); // IEND
+        out.writeInt(TAG_IEND); // IEND
         out.writeInt(0xAE_42_60_82); // crc32 for IEND
     }
 }
