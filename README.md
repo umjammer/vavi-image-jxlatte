@@ -1,7 +1,7 @@
 [![Release](https://jitpack.io/v/umjammer/vavi-image-jxlatte.svg)](https://jitpack.io/#umjammer/vavi-image-jxlatte)
 [![Java CI](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/maven.yml/badge.svg)](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/maven.yml)
 [![CodeQL](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/umjammer/vavi-image-jxlatte/actions/workflows/codeql-analysis.yml)
-![Java](https://img.shields.io/badge/Java-17-b07219)
+![Java](https://img.shields.io/badge/Java-25-b07219)
 
 # vavi-image-jxlatte
 
